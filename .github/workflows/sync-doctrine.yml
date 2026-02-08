@@ -1,0 +1,73 @@
+name: Sync Doctrine
+
+# When SOUL.md is updated in BinaryRogue HQ, push the canonical
+# copy to all agent repos automatically.
+
+on:
+  push:
+    branches: [main]
+    paths: [SOUL.md]
+
+jobs:
+  sync-soul:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync SOUL.md to all repos
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+        run: |
+          set -e
+          SOUL_CONTENT=$(base64 -w 0 SOUL.md)
+
+          sync_file() {
+            local REPO="$1"
+            local FILEPATH="$2"
+
+            echo "Syncing to milkbotai/$REPO/$FILEPATH..."
+
+            # Get current file SHA (needed for updates)
+            SHA=$(curl -s -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/milkbotai/$REPO/contents/$FILEPATH" \
+              | jq -r '.sha // empty')
+
+            # Build request body
+            if [ -n "$SHA" ]; then
+              BODY=$(jq -n \
+                --arg content "$SOUL_CONTENT" \
+                --arg sha "$SHA" \
+                --arg msg "Sync SOUL.md from BinaryRogue HQ (auto)" \
+                '{message: $msg, content: $content, sha: $sha,
+                  committer: {name: "MilkBot", email: "iambinaryrogue@gmail.com"}}')
+            else
+              BODY=$(jq -n \
+                --arg content "$SOUL_CONTENT" \
+                --arg msg "Sync SOUL.md from BinaryRogue HQ (auto)" \
+                '{message: $msg, content: $content,
+                  committer: {name: "MilkBot", email: "iambinaryrogue@gmail.com"}}')
+            fi
+
+            # Push update via GitHub Contents API
+            HTTP_CODE=$(curl -s -o /tmp/response.json -w "%{http_code}" \
+              -X PUT \
+              -H "Authorization: token $GH_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/milkbotai/$REPO/contents/$FILEPATH" \
+              -d "$BODY")
+
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+              echo "  ✓ $REPO — synced (HTTP $HTTP_CODE)"
+            else
+              echo "  ✗ $REPO — FAILED (HTTP $HTTP_CODE)"
+              cat /tmp/response.json
+              exit 1
+            fi
+          }
+
+          sync_file "claw-install" "openclaw-workspace/SOUL.md"
+          sync_file "Kalshi"       "SOUL.md"
+          sync_file "Milkbot"      "SOUL.md"
+
+          echo ""
+          echo "All repos synced."
